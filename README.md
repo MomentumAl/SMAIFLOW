@@ -18,4 +18,8 @@ View your app in AI Studio: https://ai.studio/apps/drive/13uv7aeoKDmBh3agVCwCY6A
 2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
 3. Run the app:
    `npm run dev`
+<<<<<<< HEAD
 # SMAIFLOW
+=======
+# SMAIFLOW
+>>>>>>> 81b94130cd5b7f946589924b44e79084815b3414
