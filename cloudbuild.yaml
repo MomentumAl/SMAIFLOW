@@ -13,7 +13,20 @@ steps:
       - 'push'
       - 'us-west1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/smaiflow-predict-your-greatness:$COMMIT_SHA'
 
-# ¡La solución al problema de permisos!
-# Le decimos a Cloud Build que envíe los registros directamente al sistema de Logging de Google Cloud.
+  # --- PASO FINAL Y CRUCIAL AÑADIDO ---
+  # Paso 3: Desplegar la nueva imagen en Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'smaiflow-predict-your-greatness' # El nombre de tu servicio
+      - '--image'
+      - 'us-west1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/smaiflow-predict-your-greatness:$COMMIT_SHA' # La imagen que acabamos de subir
+      - '--region'
+      - 'us-west1' # La región de tu servicio
+      - '--quiet' # Para que no pida confirmación
+
+# Opciones de configuración que ya teníamos
 options:
   logging: CLOUD_LOGGING_ONLY
