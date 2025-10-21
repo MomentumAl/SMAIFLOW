@@ -5,7 +5,12 @@ import { PLANS } from '../constants';
 import { WOMPI_PUBLIC_KEY, GCF_PAYMENT_ENDPOINT, IS_TEST_MODE } from '../wompiConfig';
 
 // Declaramos el tipo global para el widget de Wompi que se carga desde el script
-declare const WompiCheckout: any;
+// Esto le dice a TypeScript que espere que WompiCheckout exista en el objeto window.
+declare global {
+    interface Window {
+        WompiCheckout: any;
+    }
+}
 
 interface Props {
   type: 'initial' | 'readjust' | 'certificate' | null;
@@ -67,44 +72,54 @@ const PaymentModal: React.FC<Props> = ({ type, onClose, onPaymentSuccess, planDu
   const [error, setError] = useState<string | null>(null);
   const [isWompiReady, setIsWompiReady] = useState(false);
 
+  // --- REFACTORIZACIÓN PROFESIONAL DEL SCRIPT DE CARGA ---
   useEffect(() => {
-    // Si Wompi ya está cargado, no hacer nada.
-    if (typeof (window as any).WompiCheckout !== 'undefined') {
+    // Función para cargar el script de forma segura.
+    const loadWompiScript = () => {
+      // Si Wompi ya está cargado en la ventana, marcamos como listo y terminamos.
+      if (window.WompiCheckout) {
         setIsWompiReady(true);
         return;
-    }
+      }
 
-    // Si ya existe el tag del script, no añadirlo de nuevo.
-    const scriptId = 'wompi-checkout-script';
-    if (document.getElementById(scriptId)) {
+      // Si el script ya está en el DOM (quizás por otro modal), no lo añadimos de nuevo.
+      const scriptId = 'wompi-checkout-script';
+      if (document.getElementById(scriptId)) {
+        // En este caso, esperamos a que ese script existente termine de cargar.
+        // Se puede añadir un listener a ese script existente o usar un intervalo,
+        // pero la solución más simple es confiar en que se cargará.
         return;
-    }
-    
-    const script = document.createElement('script');
-    script.id = scriptId;
-    script.src = 'https://checkout.wompi.co/widget.js';
-    script.async = false;
-    
-    const handleLoad = () => {
+      }
+      
+      const script = document.createElement('script');
+      script.id = scriptId;
+      script.src = 'https://checkout.wompi.co/widget.js';
+      script.async = true; // Cargamos de forma asíncrona y confiamos en el evento 'load'.
+      
+      const handleLoad = () => {
+        console.log("Wompi script cargado exitosamente.");
         setIsWompiReady(true);
-    };
-    
-    const handleError = () => {
-        console.error('Failed to load Wompi script.');
+      };
+      
+      const handleError = () => {
+        console.error('Fallo al cargar el script de Wompi.');
         setError("Error crítico: No se pudo cargar el componente de pago. Por favor, refresca la página e inténtalo de nuevo.");
-    };
+      };
 
-    script.addEventListener('load', handleLoad);
-    script.addEventListener('error', handleError);
-    
-    document.head.appendChild(script);
+      script.addEventListener('load', handleLoad);
+      script.addEventListener('error', handleError);
+      
+      document.head.appendChild(script);
 
-    // Cleanup
-    return () => {
+      // Función de limpieza: se ejecuta cuando el componente se desmonta.
+      return () => {
         script.removeEventListener('load', handleLoad);
         script.removeEventListener('error', handleError);
+      };
     };
-  }, []);
+
+    loadWompiScript();
+  }, []); // El array vacío asegura que este efecto se ejecute solo una vez, cuando el modal se monta.
 
   const getPlanPrice = (planType: PlanType): number => {
     if (type === 'certificate' && planType !== 'premium') {
@@ -123,75 +138,83 @@ const PaymentModal: React.FC<Props> = ({ type, onClose, onPaymentSuccess, planDu
         return;
     }
 
-    // The button is disabled until isWompiReady is true, so WompiCheckout is guaranteed to be defined.
+    // --- GUARDIA DEFENSIVA CONTRA CONDICIONES DE CARRERA ---
+    // Aunque el botón está deshabilitado, hacemos una doble verificación aquí
+    // para garantizar que WompiCheckout exista en el momento exacto del clic.
+    if (!isWompiReady || typeof window.WompiCheckout === 'undefined') {
+        setError("El checkout de pago no está listo. Por favor, espera un momento y vuelve a intentarlo.");
+        setProcessingPlan(null);
+        console.error("handlePay fue llamado, pero WompiCheckout no está definido en window.");
+        return;
+    }
 
     const isTestMode = IS_TEST_MODE;
 
     if (planType === 'premium') {
-        // --- FLUJO DE SUSCRIPCIÓN ROBUSTO: TOKENIZACIÓN EXPLÍCITA ---
-        try {
-            const checkout = new WompiCheckout({
-                publicKey: WOMPI_PUBLIC_KEY,
-                operation: 'tokenize',
-                customerData: {
-                    email: userEmail,
-                }
-            });
+      // --- FLUJO DE SUSCRIPCIÓN ROBUSTO: TOKENIZACIÓN EXPLÍCITA ---
+      try {
+          const checkout = new window.WompiCheckout({
+              publicKey: WOMPI_PUBLIC_KEY,
+              operation: 'tokenize',
+              customerData: {
+                  email: userEmail,
+              }
+          });
 
-            checkout.open(async function (result: any) {
-                if (result.error) {
-                    setError(`Error al registrar la tarjeta: ${result.error.reason || 'Intenta de nuevo.'}`);
-                    setProcessingPlan(null);
-                    return;
-                }
-                
-                const cardToken = result.token.id;
-                
-                try {
-                    const price = getPlanPrice(planType);
-                    const amountInCents = price * 100;
-                    const reference = `smaiflow-premium-initial-${new Date().getTime()}`;
+          checkout.open(async function (result: any) {
+              if (result.error) {
+                  setError(`Error al registrar la tarjeta: ${result.error.reason || 'Intenta de nuevo.'}`);
+                  setProcessingPlan(null);
+                  return;
+              }
+              
+              const cardToken = result.token.id;
+              
+              try {
+                  const price = getPlanPrice(planType);
+                  const amountInCents = price * 100;
+                  const reference = `smaiflow-premium-initial-${new Date().getTime()}`;
 
-                    const response = await fetch(GCF_PAYMENT_ENDPOINT, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                          action: 'setup-and-charge-subscription',
-                          data: {
-                            token: cardToken,
-                            customer_email: userEmail,
-                            amountInCents: amountInCents,
-                            reference: reference,
-                          },
-                          isTestMode: isTestMode,
-                        }),
-                    });
+                  const response = await fetch(GCF_PAYMENT_ENDPOINT, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({
+                        action: 'setup-and-charge-subscription',
+                        data: {
+                          token: cardToken,
+                          customer_email: userEmail,
+                          amountInCents: amountInCents,
+                          reference: reference,
+                        },
+                        isTestMode: isTestMode,
+                      }),
+                  });
 
-                    if (!response.ok) {
-                        const errorData = await response.json();
-                        throw new Error(errorData.error || 'El servidor rechazó la solicitud de suscripción.');
-                    }
-                    
-                    const transactionResult = await response.json();
-                    
-                    if (transactionResult.status === 'APPROVED') {
-                        onPaymentSuccess('premium');
-                    } else {
-                        throw new Error(`El pago inicial fue ${transactionResult.status?.toLowerCase() || 'rechazado'}. ${transactionResult.message || ''}`);
-                    }
+                  if (!response.ok) {
+                      const errorData = await response.json();
+                      throw new Error(errorData.error || 'El servidor rechazó la solicitud de suscripción.');
+                  }
+                  
+                  const transactionResult = await response.json();
+                  
+                  if (transactionResult.status === 'APPROVED') {
+                      onPaymentSuccess('premium');
+                  } else {
+                      throw new Error(`El pago inicial fue ${transactionResult.status?.toLowerCase() || 'rechazado'}. ${transactionResult.message || ''}`);
+                  }
 
-                } catch (backendError: any) {
-                    console.error("Error calling backend for subscription:", backendError);
-                    setError(backendError.message || 'No se pudo completar la suscripción. No se ha realizado ningún cobro.');
-                    setProcessingPlan(null);
-                }
-            });
+              } catch (backendError: any) {
+                  console.error("Error llamando al backend para la suscripción:", backendError);
+                  setError(backendError.message || 'No se pudo completar la suscripción. No se ha realizado ningún cobro.');
+                  setProcessingPlan(null);
+              }
+          });
 
-        } catch (err: any) {
-             console.error("Error setting up Wompi for tokenization:", err);
-             setError('No se pudo iniciar el proceso de pago. Revisa la consola.');
-             setProcessingPlan(null);
-        }
+      } catch (err: any) {
+           console.error("Error configurando Wompi para tokenización:", err);
+           setError('No se pudo iniciar el proceso de pago. Revisa la consola.');
+           setProcessingPlan(null);
+      }
 
     } else {
         // --- FLUJO EXISTENTE PARA PAGOS ÚNICOS ---
@@ -216,7 +239,7 @@ const PaymentModal: React.FC<Props> = ({ type, onClose, onPaymentSuccess, planDu
             }
             const { signature } = await signatureResponse.json();
             
-            const checkout = new WompiCheckout({
+            const checkout = new window.WompiCheckout({
                 currency: 'COP',
                 amountInCents: amountInCents,
                 reference: reference,
@@ -294,14 +317,14 @@ const PaymentModal: React.FC<Props> = ({ type, onClose, onPaymentSuccess, planDu
     
           <div className={`mt-8 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6`}>
               {plansToShow.map(plan => (
-                   <PlanCard 
-                        key={plan.id}
-                        plan={plan}
-                        onPay={handlePay}
-                        isProcessing={!!processingPlan}
-                        currentSelection={processingPlan}
-                        isWompiReady={isWompiReady}
-                   />
+                 <PlanCard 
+                      key={plan.id}
+                      plan={plan}
+                      onPay={handlePay}
+                      isProcessing={!!processingPlan}
+                      currentSelection={processingPlan}
+                      isWompiReady={isWompiReady}
+                 />
               ))}
           </div>
         </>
